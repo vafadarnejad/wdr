@@ -1,0 +1,63 @@
+library(DESeq)
+library(genefilter)
+library(statmod)
+
+# Normalization of ERCC read count table
+countsERCC <- read.csv( "ERCC.csv", header=TRUE, row.names=1 )
+sfERCC <- estimateSizeFactorsForMatrix( countsERCC )
+nCountsERCC <- t( t(countsERCC) / sfERCC )
+
+# Normalization of gene read count table
+countsMmus <- read.csv( "Gene.csv", header=TRUE, row.names=1 )
+sfMmus <- estimateSizeFactorsForMatrix( countsMmus )
+nCountsMmus <- t( t(countsMmus) / sfMmus )
+
+# Calculating CV^2 of ERCC count table
+meansERCC <- rowMeans(nCountsERCC)
+varsERCC <- rowVars( nCountsERCC )
+cv2ERCC <- varsERCC / meansERCC^2
+
+# Calculating CV^2 of gene count table
+meansMmus <- rowMeans( nCountsMmus )
+varsMmus <- rowVars( nCountsMmus )
+cv2Mmus <- varsMmus / meansMmus^2
+
+# Fitting Technical Noise
+minMeanForFit <- unname( quantile( meansERCC[ which( cv2ERCC > .3 ) ], .8 ) )
+useForFit <- meansERCC >= minMeanForFit
+minMeanForFit
+
+table(useForFit)
+
+fit <- glmgam.fit( cbind( a0 = 1, a1tilde = 1/meansERCC[useForFit] ), cv2ERCC[useForFit] )
+residual <- var( log( fitted.values(fit) ) - log( cv2ERCC[useForFit] ) )
+total <- var( log( cv2ERCC[useForFit] ) )
+A = 1 - residual / total
+A
+
+# Finding Highly Variable Genes
+minBiolDisp <- .5^2
+xi <- mean( 1 / sfERCC )
+m <- ncol(countsMmus)
+psia1theta <- mean( 1 / sfERCC ) + ( coefficients(fit)["a1tilde"] - xi ) * mean( sfERCC / sfMmus )
+cv2th <- coefficients(fit)["a0"] + minBiolDisp + coefficients(fit)["a0"] * minBiolDisp
+testDenom <- ( meansMmus * psia1theta + meansMmus^2 * cv2th ) / ( 1 + cv2th/m )
+p <- 1 - pchisq( varsMmus * (m-1) / testDenom, m-1 )
+padj <- p.adjust( p, "BH" )
+sig <- padj < .1
+sig[is.na(sig)] <- FALSE
+table( padj < .1 )
+
+log2RelExprMmus <- log2( nCountsMmus / meansMmus )
+HighlyVariableGenes <- data.frame(
+row.names = NULL,
+geneID = rownames(countsMmus)[ sig ],
+meanNormCount = meansMmus[ sig ],
+strongest = factor( colnames( log2RelExprMmus )[
+apply( log2RelExprMmus[ sig, ], 1, which.max ) ] ),
+log2RelExprMmus[ sig, ],
+check.names=FALSE )
+
+head( HighlyVariableGenes )
+
+write.csv( HighlyVariableGenes, file="HVG.csv", row.names=FALSE ) # HVG: Highly Variable Genes
